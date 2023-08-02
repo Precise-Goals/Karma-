@@ -4,413 +4,432 @@ import datetime
 import pytz
 import asyncio
 import random
+import keep_alive
+import os
+import json
+bot = commands.Bot(command_prefix='.', intents=discord.Intents.all())
 
-# Replace 'YOUR_BOT_TOKEN' with your actual bot token
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
-
-# Timezone settings (replace 'Asia/Kolkata' with your timezone if needed)
-IST = pytz.timezone('Asia/Kolkata')
-HH, MM = 18, 0  # Hour and minute in 24-hour format for the daily leaderboard upload time
-
-# Dictionary to store server settings
+# Dictionary to store server-specific settings
 server_settings = {}
-
-# Dictionary to store video usage data for each guild
-video_usage_data = {}
-
-# Dictionary to store VC roles for multiple VCs
 vc_roles = {}
+todo_tasks = {}
+IST = pytz.timezone('Asia/Kolkata')
+HH, MM = 0, 0  # Set the time (in 24-hour format) when daily leaderboard should be uploaded
+upload_time = datetime.time(HH, MM)
+if os.path.exists("server_settings.json"):
+    with open("server_settings.json", "r") as file:
+        server_settings = json.load(file)
+else:
+    server_settings = {}
 
-# Define the time for leaderboard upload in IST (replace 'HH' with the hour and 'MM' with the minute)
-upload_time = datetime.time(hour=HH, minute=MM)
 
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
+  print(f"Logged in as {bot.user.name}")
+  for guild in bot.guilds:
+    if guild.id not in server_settings:
+      server_settings[guild.id] = {
+          "vc_channels": [],
+          "message_channel_id": None,
+          "embed_color": discord.Color.dark_blue(),
+          "mercy_time": 5,
+          "monthly_top_role": None,
+          "vc_count_dict": {}
+      }
+      vc_roles[guild.id] = {}
+  topdaily.start()
 
 
-@bot.event
-async def on_guild_join(guild):
-    # Initialize server settings when the bot joins a new guild
-    server_settings[guild.id] = {
-        "vc_channels": [],
-        "message_channel_id": None,
-        "vc_count_dict": {},
-        "top_user_role": None,
-        "embed_color": discord.Color.blue().value,
-        "mercy_time": 30,
-        "monthly_top_role": None
-    }
-    vc_roles[guild.id] = {}
-
-
-@bot.event
-async def on_command(ctx):
-    # Send a message prefixing each bot-generated message
-    await ctx.send("Hey there! For a list of available commands, use `!help`.")
-
-
-@bot.command()
-async def help(ctx):
-    # Display the help command with dedicated sections for guild-specific commands
-    help_embed = discord.Embed(title="Study Bot Commands", color=discord.Color.blurple())
-    help_embed.add_field(name="Server Settings", value="Commands for managing server settings:", inline=False)
-    help_embed.add_field(name="!set_vc_channel <channel_id>", value="Set a VC channel for tracking.", inline=False)
-    help_embed.add_field(name="!remove_vc_channel <channel_id>", value="Remove a VC channel from tracking.", inline=False)
-    help_embed.add_field(name="!set_message_channel <channel_id>", value="Set the message channel for daily leaderboards.", inline=False)
-    help_embed.add_field(name="!set_embed_color <color>", value="Set the embed color for the leaderboard.", inline=False)
-    help_embed.add_field(name="!set_mercy_time <seconds>", value="Set the mercy time interval.", inline=False)
-    help_embed.add_field(name="!set_monthly_top_role <role>", value="Set the monthly top role.", inline=False)
-
-    help_embed.add_field(name="VC Roles", value="Commands for managing roles for VC channels:", inline=False)
-    help_embed.add_field(name="!set_vc_role <vc_channel> <vc_role>", value="Set a role for a VC channel.", inline=False)
-    help_embed.add_field(name="!remove_vc_role <vc_channel>", value="Remove the role set for a VC channel.", inline=False)
-
-    help_embed.add_field(name="Study Bot Features", value="Commands for the study bot features:", inline=False)
-    help_embed.add_field(name="!daily_leaderboard", value="Manually trigger the daily leaderboard upload.", inline=False)
-    help_embed.add_field(name="!monthly_leaderboard", value="Display the monthly study time leaderboard.", inline=False)
-    help_embed.add_field(name="!stats", value="Display server statistics.", inline=False)
-
-    await ctx.send(embed=help_embed)
+categories = {
+    "Leaderboard": [
+        ".settracking <vc_channel>",
+        ".removetracking <vc_channel>",
+        ".setdailyleaderboardchannel <message_channel>",
+        ".setembedcolor <color>",
+        ".setmercytime <minutes>",
+        ".setmonthlytoprole <role_id>",
+        ".topdaily",
+        ".topmonthly",
+        ".updateleaderboards <daily/monthly>",
+    ],
+    "Study VC": [
+        ".setvcrole <vc_channel> <vc_role>",
+        ".removevcrole <vc_channel>",
+    ],
+    "Pomodoro": [
+        ".svctime",
+        ".todolist",
+        ".todo <task>",
+        ".todorm <task_index>",
+        ".tocheck <task_index>",
+    ]
+}
 
 
 @bot.command()
-async def set_vc_channel(ctx, channel_id: int):
-    # Command to set a VC channel for tracking (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        vc_channels = server_settings[ctx.guild.id].get("vc_channels", [])
-        if channel_id not in vc_channels:
-            vc_channels.append(channel_id)
-            server_settings[ctx.guild.id]["vc_channels"] = vc_channels
-            await ctx.send(f"VC channel <#{channel_id}> added for tracking.")
+async def bot_help(ctx, category=None):
+    if category is None:
+        # If no category is provided, show the general help message
+        bot_avatar_url = bot.user.avatar_url_as(format="png", size=128)
+
+        help_embed = discord.Embed(title="Bot Commands",
+                                   color=server_settings[ctx.guild.id]["embed_color"])  # Use the server-specific embed color
+
+        help_embed.set_thumbnail(url=bot_avatar_url)
+        help_embed.set_author(name=bot.user.name, icon_url=bot_avatar_url)
+        help_embed.set_footer(text="Powered by Garuda", icon_url=bot_avatar_url)
+
+        help_embed.description = "> **The Garuda will help your hardwork shine throughout your studies with the help of its multitasking and easy functioning.**"
+
+        for category_name, category_commands in categories.items():
+            commands_list = "\n".join(category_commands)
+            help_embed.add_field(name=category_name,
+                                 value=commands_list,
+                                 inline=False)
+
+        await ctx.send(embed=help_embed)
+
+    else:
+        # If a category is provided, show the commands in that category
+        category = category.capitalize()
+        if category in categories:
+            bot_avatar_url = bot.user.avatar_url_as(format="png", size=128)
+
+            category_embed = discord.Embed(
+                title=f"{category} Commands", color=server_settings[ctx.guild.id]["embed_color"])  # Use the server-specific embed color
+            category_embed.set_thumbnail(url=bot_avatar_url)
+            category_embed.set_author(name=bot.user.name,
+                                      icon_url=bot_avatar_url)
+            category_embed.set_footer(text="Powered by Garuda", icon_url=bot_avatar_url)
+
+            category_commands = categories[category]
+            commands_list = "\n".join(category_commands)
+
+            category_embed.description = "Commands related to {}:\n{}".format(
+                category, commands_list)
+
+            await ctx.send(embed=category_embed)
         else:
-            await ctx.send("This VC channel is already being tracked.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+            await ctx.send("Invalid category. Use `.bot_help` to see all commands.")
+
+
+
+def get_command_description(command):
+  # Add a cool description for each command here
+  command_descriptions = {
+      ".settracking <vc_channel>": "Set a VC channel for tracking.",
+      ".removetracking <vc_channel>": "Remove a VC channel from tracking.",
+      ".setdailyleaderboardchannel <message_channel>":
+      "Set the channel for daily leaderboards.",
+      ".setembedcolor <color>": "Set the embed color for the leaderboard.",
+      # Add other command descriptions...
+  }
+  return command_descriptions.get(command, "No description available.")
 
 
 @bot.command()
-async def remove_vc_channel(ctx, channel_id: int):
-    # Command to remove a VC channel from tracking (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        vc_channels = server_settings[ctx.guild.id].get("vc_channels", [])
-        if channel_id in vc_channels:
-            vc_channels.remove(channel_id)
-            server_settings[ctx.guild.id]["vc_channels"] = vc_channels
-            await ctx.send(f"VC channel <#{channel_id}> removed from tracking.")
-        else:
-            await ctx.send("This VC channel is not being tracked.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+async def settracking(ctx, vc_channel: discord.VoiceChannel):
+  # Command to set a VC channel for tracking (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    server_settings[ctx.guild.id]["vc_channels"].append(vc_channel.id)
+    await ctx.send(f"VC channel '{vc_channel.name}' is now set for tracking.")
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
 
 
 @bot.command()
-async def set_message_channel(ctx, channel_id: int):
-    # Command to set the message channel for sending daily leaderboards (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        server_settings[ctx.guild.id]["message_channel_id"] = channel_id
-        await ctx.send(f"Message channel set to <#{channel_id}> for daily leaderboards.")
+async def removetracking(ctx, vc_channel: discord.VoiceChannel):
+  # Command to remove a VC channel from tracking (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    if vc_channel.id in server_settings[ctx.guild.id]["vc_channels"]:
+      server_settings[ctx.guild.id]["vc_channels"].remove(vc_channel.id)
+      await ctx.send(
+          f"VC channel '{vc_channel.name}' has been removed from tracking.")
     else:
-        await ctx.send("You don't have the required permissions to use this command.")
+      await ctx.send("This VC channel is not being tracked.")
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
 
 
 @bot.command()
-async def set_embed_color(ctx, color: str):
-    # Command to set the embed color for the leaderboard (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        try:
-            color_value = int(color, 16)
-            server_settings[ctx.guild.id]["embed_color"] = color_value
-            await ctx.send(f"Embed color set to #{color}.")
-        except ValueError:
-            await ctx.send("Invalid color format. Please use a valid hexadecimal color (e.g., FF0000 for red).")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+async def setdailyleaderboardchannel(ctx,
+                                     message_channel: discord.TextChannel):
+  # Command to set the message channel for daily leaderboards (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    server_settings[ctx.guild.id]["message_channel_id"] = message_channel.id
+    await ctx.send(
+        f"The daily leaderboard channel has been set to '{message_channel.mention}'."
+    )
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
 
 
 @bot.command()
-async def set_mercy_time(ctx, mercy_time: int):
-    # Command to set the mercy time interval (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        server_settings[ctx.guild.id]["mercy_time"] = mercy_time
-        await ctx.send(f"Mercy time interval set to {mercy_time} seconds.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+@commands.has_permissions(administrator=True)
+async def setembedcolor(ctx, color: discord.Color):
+    # Command to set the embed color for the leaderboard (only server administrators can use this)
+    server_settings[ctx.guild.id]["embed_color"] = color.value  # Save the color value as an integer
+    save_server_settings()
+    await ctx.send(
+        f"The embed color for the leaderboard has been updated to the specified color."
+    )
+def save_server_settings():
+    # Save the server settings to a JSON file
+    with open("server_settings.json", "w") as file:
+        json.dump(server_settings, file)
 
 
 @bot.command()
-async def set_monthly_top_role(ctx, role: discord.Role):
-    # Command to set the monthly top role (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        server_settings[ctx.guild.id]["monthly_top_role"] = role.id
-        await ctx.send(f"Monthly top role set to {role.name}.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+async def setmercytime(ctx, minutes: int):
+  # Command to set the mercy time for the leaderboard (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    server_settings[ctx.guild.id]["mercy_time"] = minutes
+    await ctx.send(
+        f"The mercy time for the leaderboard has been set to {minutes} minutes."
+    )
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
 
 
 @bot.command()
-async def daily_leaderboard(ctx):
-    # Command to manually trigger the daily leaderboard upload (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        await update_leaderboards(ctx.guild)
+async def setmonthlytoprole(ctx, role: discord.Role):
+  # Command to set the role for the monthly top user (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    server_settings[ctx.guild.id]["monthly_top_role"] = role.id
+    await ctx.send(
+        f"The role '{role.name}' is now set as the monthly top user role.")
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
+
+
+@bot.command()
+async def topdaily(ctx):
+  # Command to show the top users of the day
+  await updateleaderboards(ctx, "daily")
+
+
+@bot.command()
+async def updateleaderboards(ctx, leaderboard_type):
+  # Command to update and display the daily or monthly leaderboard
+  if leaderboard_type.lower() == "daily":
+    await topdaily(ctx)
+  elif leaderboard_type.lower() == "monthly":
+    await topmonthly(ctx)
+  else:
+    await ctx.send(
+        "Invalid leaderboard type. Use `.topdaily` or `.topmonthly`.")
+
+
+@tasks.loop(minutes=5)
+async def topdaily(ctx):
+  # Loop to upload the daily leaderboard at the specified time
+  current_time = datetime.datetime.now(IST).time()
+  if current_time.hour == HH and current_time.minute == MM:
+    message_channel_id = server_settings[ctx.guild.id]["message_channel_id"]
+    if message_channel_id:
+      message_channel = ctx.guild.get_channel(message_channel_id)
+      if message_channel:
+        await topdaily(ctx.guild, message_channel)
+
+
+@bot.command()
+async def setvcrole(ctx, vc_channel: discord.VoiceChannel,
+                    vc_role: discord.Role):
+  # Command to set a role for a specific VC channel (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    vc_roles[ctx.guild.id][vc_channel.id] = vc_role.id
+    await ctx.send(
+        f"The role '{vc_role.name}' is now set for the VC channel '{vc_channel.name}'."
+    )
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
+
+
+@bot.command()
+async def removevcrole(ctx, vc_channel: discord.VoiceChannel):
+  # Command to remove the role for a specific VC channel (only server admins can use this)
+  if ctx.author.guild_permissions.administrator:
+    if vc_channel.id in vc_roles[ctx.guild.id]:
+      del vc_roles[ctx.guild.id][vc_channel.id]
+      await ctx.send(
+          f"The role for the VC channel '{vc_channel.name}' has been removed.")
     else:
-        await ctx.send("You don't have the required permissions to use this command.")
+      await ctx.send("There is no role set for this VC channel.")
+  else:
+    await ctx.send(
+        "You don't have the required permissions to use this command.")
 
 
-async def update_leaderboards(guild):
-    # Function to update the daily leaderboards for the guild
-    settings = server_settings.get(guild.id)
-    if not settings:
-        return
-
-    vc_channels = settings.get("vc_channels", [])
-    message_channel_id = settings.get("message_channel_id")
-    vc_count_dict = settings.get("vc_count_dict")
-    top_user_role_id = settings.get("top_user_role")
-    embed_color = settings.get("embed_color", discord.Color.blue().value)
-
-    if not vc_channels or not message_channel_id or not vc_count_dict:
-        return
-
-    # Sort the VC count dictionary by values (descending)
-    sorted_vc_count = sorted(vc_count_dict.items(), key=lambda item: item[1], reverse=True)
-
-    # Prepare the daily leaderboard message
-    leaderboard_embed = discord.Embed(title="Daily Study Time Leaderboard", color=embed_color)
-
-    for i, (member_id, vc_time) in enumerate(sorted_vc_count[:6], 1):
-        member = guild.get_member(member_id)
-        if member and member.voice and member.voice.channel and member.voice.channel.id in vc_channels:
-            leaderboard_embed.add_field(name=f"{i}. {member.display_name}", value=f"{vc_time // 60:02d}:{vc_time % 60:02d} minutes", inline=False)
-
-    message_channel = guild.get_channel(message_channel_id)
-    await message_channel.send(embed=leaderboard_embed)
+@bot.command()
+async def svctime(ctx):
+  # Command to display the remaining time for the next pomodoro session
+  current_time = datetime.datetime.now(IST).time()
+  time_left = datetime.datetime.combine(
+      datetime.date.today(), upload_time) - datetime.datetime.combine(
+          datetime.date.today(), current_time)
+  hours, minutes, seconds = str(time_left).split(":")
+  await ctx.send(
+      f"The next pomodoro session will start in {hours} hours, {minutes} minutes."
+  )
 
 
-@tasks.loop(hours=24)
-async def daily_upload():
-    # Loop to trigger the daily leaderboard upload
-    now = datetime.datetime.now(IST)
-    if now.time() == upload_time:
-        for guild in bot.guilds:
-            await update_leaderboards(guild)
+@bot.command()
+async def todolist(ctx):
+  # Command to display the current todo list of the user
+  user_id = ctx.author.id
+  todo_tasks.setdefault(ctx.guild.id, {}).setdefault(user_id, [])
+  if not todo_tasks[ctx.guild.id][user_id]:
+    await ctx.send("Your todo list is empty.")
+  else:
+    todo_list_embed = discord.Embed(
+        title="Todo List", color=server_settings[ctx.guild.id]["embed_color"])
+    for index, task in enumerate(todo_tasks[ctx.guild.id][user_id]):
+      todo_list_embed.add_field(name=f"Task {index + 1}",
+                                value=task,
+                                inline=False)
+    await ctx.send(embed=todo_list_embed)
 
 
-def get_vc_channel(member):
-    # Function to get the VC channel where the member is currently connected
-    if member.voice and member.voice.channel:
-        return member.voice.channel.id
-    return None
+@bot.command()
+async def todo(ctx, *, task):
+  # Command to add a new task to the user's todo list
+  user_id = ctx.author.id
+  todo_tasks.setdefault(ctx.guild.id, {}).setdefault(user_id, [])
+  todo_tasks[ctx.guild.id][user_id].append(task)
+  await ctx.send("Task added to your todo list.")
 
 
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if not member.bot:
-        if before.channel != after.channel:
-            # If the member was in a VC channel, update the VC count and check for video usage
-            if before.channel:
-                await update_vc_count(before.channel.guild, before.channel, member, before)
-
-            # If the member is now in a VC channel, update the VC count and check for video usage
-            if after.channel:
-                await update_vc_count(after.channel.guild, after.channel, member, after)
-
-                # Check for video usage after 8 seconds of joining the study VC
-                if after.channel.id in server_settings[member.guild.id]["vc_channels"] and after.channel.id not in video_usage_data.get(member.guild.id, {}):
-                    await asyncio.sleep(8)  # Wait for 8 seconds
-                    vc_state = member.guild.voice_client
-                    if vc_state and vc_state.is_playing() and not member.voice.self_video:
-                        video_usage_data.setdefault(member.guild.id, {})[after.channel.id] = member.id
-                        await member.send("Your video is not allowed in the study VC. Please turn it off or you will be kicked.")
+@bot.command()
+async def todorm(ctx, task_index: int):
+  # Command to remove a task from the user's todo list
+  user_id = ctx.author.id
+  todo_tasks.setdefault(ctx.guild.id, {}).setdefault(user_id, [])
+  if 1 <= task_index <= len(todo_tasks[ctx.guild.id][user_id]):
+    del todo_tasks[ctx.guild.id][user_id][task_index - 1]
+    await ctx.send("Task removed from your todo list.")
+  else:
+    await ctx.send(
+        "Invalid task index. Please check your todo list and try again.")
 
 
+@bot.command()
+async def tocheck(ctx, task_index: int):
+  # Command to mark a task as completed in the user's todo list
+  user_id = ctx.author.id
+  todo_tasks.setdefault(ctx.guild.id, {}).setdefault(user_id, [])
+  if 1 <= task_index <= len(todo_tasks[ctx.guild.id][user_id]):
+    todo_tasks[ctx.guild.id][user_id][
+        task_index -
+        1] = f"~~{todo_tasks[ctx.guild.id][user_id][task_index - 1]}~~"
+    await ctx.send("Task marked as completed in your todo list.")
+  else:
+    await ctx.send(
+        "Invalid task index. Please check your todo list and try again.")
+
+
+@bot.command()
 async def update_vc_count(guild, vc_channel, member, voice_state):
-    # Function to update the VC count for the given member and channel
-    settings = server_settings.get(guild.id)
-    if not settings:
-        return
+  vc_count_dict = server_settings[guild.id]["vc_count_dict"]
+  vc_count_dict[vc_channel.id] = vc_count_dict.get(vc_channel.id, 0) + 1
 
-    vc_count_dict = settings.get("vc_count_dict")
-    if not vc_count_dict:
-        return
-
-    vc_time = vc_count_dict.get(member.id, 0)
-    current_time = datetime.datetime.now(IST)
-
-    if voice_state.channel and voice_state.channel == vc_channel:
-        if not member.bot:
-            # Calculate the time spent in the VC
-            vc_time += (current_time - voice_state.channel.connect_time).seconds
-            vc_count_dict[member.id] = vc_time
-    else:
-        # Calculate the time spent in the VC before disconnecting
-        vc_time += (current_time - voice_state.channel.connect_time).seconds
-        vc_count_dict[member.id] = vc_time
+  if vc_count_dict[vc_channel.id] == 1:
+    role_id = vc_roles[guild.id].get(vc_channel.id)
+    if role_id:
+      vc_role = guild.get_role(role_id)
+      if vc_role:
+        await member.add_roles(vc_role)
+  elif vc_count_dict[vc_channel.id] == 0:
+    role_id = vc_roles[guild.id].get(vc_channel.id)
+    if role_id:
+      vc_role = guild.get_role(role_id)
+      if vc_role:
+        await member.remove_roles(vc_role)
 
 
-@tasks.loop(seconds=1)
-async def check_video_usage():
-    # Loop to check for video usage in the study VCs and kick if required
-    for guild_id, guild_data in video_usage_data.items():
+@tasks.loop(minutes=5)
+async def topdaily():
+  # Loop to upload the daily leaderboard at the specified time
+  current_time = datetime.datetime.now(IST).time()
+  if current_time.hour == HH and current_time.minute == MM:
+    for guild_id, settings in server_settings.items():
+      message_channel_id = settings["message_channel_id"]
+      if message_channel_id:
         guild = bot.get_guild(guild_id)
-        mercy_time = server_settings[guild_id]["mercy_time"]
-
-        for channel_id, user_id in guild_data.items():
-            vc_channel = guild.get_channel(channel_id)
-            if not vc_channel:
-                continue
-
-            member = guild.get_member(user_id)
-            if not member:
-                continue
-
-            vc_state = guild.voice_client
-            if vc_state and vc_state.channel == vc_channel and vc_state.is_playing():
-                if not member.voice.self_video:
-                    if (datetime.datetime.now() - vc_state.connect_time).seconds >= mercy_time:
-                        del video_usage_data[guild_id][channel_id]
-                        await member.send("You were kicked from the study VC because your video was on for too long.")
-                        await vc_state.disconnect()
-                else:
-                    if vc_state.is_playing():
-                        del video_usage_data[guild_id][channel_id]
-                        await member.send("You were kicked from the study VC because videos are not allowed.")
-                        await vc_state.disconnect()
+        message_channel = guild.get_channel(message_channel_id)
+        if message_channel:
+          await generate_daily_leaderboard(guild, message_channel)
 
 
-@tasks.loop(minutes=25)
-async def check_pomodoro_loop():
-    # Loop to check and send a message when a pomodoro session is completed
-    for guild_id, guild_data in server_settings.items():
-        vc_channels = guild_data.get("vc_channels", [])
-        if not vc_channels:
-            continue
+async def generate_daily_leaderboard(guild, message_channel):
+  # Generate and send the daily leaderboard
+  vc_count_dict = server_settings[guild.id]["vc_count_dict"]
+  sorted_vc_channels = sorted(server_settings[guild.id]["vc_channels"],
+                              key=lambda x: vc_count_dict.get(x, 0),
+                              reverse=True)
 
-        for channel_id in vc_channels:
-            vc_channel = bot.get_channel(channel_id)
-            vc_state = vc_channel.guild.voice_client
+  daily_leaderboard_embed = discord.Embed(
+      title="Daily Leaderboard",
+      color=server_settings[guild.id]["embed_color"])
 
-            if vc_state and vc_state.is_playing():
-                try:
-                    await vc_channel.send("The current pomodoro session has ended. Take a break and be back for the next session.")
-                except discord.Forbidden:
-                    pass
+  if sorted_vc_channels:
+    for index, vc_channel_id in enumerate(sorted_vc_channels, 1):
+      vc_channel = guild.get_channel(vc_channel_id)
+      if vc_channel:
+        vc_count = vc_count_dict.get(vc_channel_id, 0)
+        daily_leaderboard_embed.add_field(
+            name=f"#{index} {vc_channel.name}",
+            value=f"**Participants:** {vc_count}",
+            inline=False)
+  else:
+    daily_leaderboard_embed.add_field(
+        name="No VC channels being tracked",
+        value="Use `.settracking` to set VC channels for tracking.",
+        inline=False)
 
-
-@tasks.loop(hours=24)
-async def erase_data():
-    # Loop to erase unnecessary data after two days
-    for guild_id, guild_data in video_usage_data.items():
-        two_days_ago = datetime.datetime.now() - datetime.timedelta(days=2)
-        guild_data_copy = guild_data.copy()
-        for channel_id, timestamp in guild_data_copy.items():
-            if timestamp < two_days_ago.timestamp():
-                del guild_data[channel_id]
+  await message_channel.send(embed=daily_leaderboard_embed)
 
 
 @bot.command()
-async def monthly_leaderboard(ctx):
-    # Command to display the monthly leaderboard
-    settings = server_settings.get(ctx.guild.id)
-    if not settings:
-        return
-
-    vc_channels = settings.get("vc_channels", [])
-    vc_count_dict = settings.get("vc_count_dict")
-    top_user_role_id = settings.get("top_user_role")
-    embed_color = settings.get("embed_color", discord.Color.blue().value)
-
-    if not vc_channels or not vc_count_dict:
-        return
-
-    # Sort the VC count dictionary by values (descending)
-    sorted_vc_count = sorted(vc_count_dict.items(), key=lambda item: item[1], reverse=True)
-
-    # Prepare the monthly leaderboard message
-    leaderboard_embed = discord.Embed(title="Monthly Study Time Leaderboard", color=embed_color)
-
-    top_members = []
-    for i, (member_id, vc_time) in enumerate(sorted_vc_count[:10], 1):
-        member = ctx.guild.get_member(member_id)
-        if member and get_vc_channel(member) in vc_channels:
-            top_members.append(member)
-
-    center_member = top_members[0]
-    center_pfp = center_member.avatar_url_as(size=256)
-
-    leaderboard_embed.set_author(name=f"{center_member.display_name} - {sorted_vc_count[0][1] // 60:02d}:{sorted_vc_count[0][1] % 60:02d} hours")
-    leaderboard_embed.set_image(url=center_pfp)
-
-    member_chunk_size = 3  # Number of members in each chunk
-    member_chunks = [top_members[i:i + member_chunk_size] for i in range(1, len(top_members), member_chunk_size)]
-
-    for i, chunk in enumerate(member_chunks):
-        chunk_str = "\n".join(f"{member.display_name} - {sorted_vc_count[top_members.index(member)][1] // 60:02d}:{sorted_vc_count[top_members.index(member)][1] % 60:02d} hours" for member in chunk)
-        chunk_pfps = "\n".join(member.avatar_url_as(size=64) for member in chunk)
-
-        # Add padding between the chunks
-        if i > 0:
-            leaderboard_embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        leaderboard_embed.add_field(name="\u200b", value=chunk_str, inline=True)
-        leaderboard_embed.set_thumbnail(url=chunk_pfps)
-
-    await ctx.send(embed=leaderboard_embed)
+async def topmonthly(ctx):
+  # Command to show the top users of the month
+  await generate_monthly_leaderboard(ctx.guild, ctx.channel)
 
 
-@bot.command()
-async def set_vc_role(ctx, vc_channel: discord.VoiceChannel, vc_role: discord.Role):
-    # Command to set a role for a specific VC channel (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        if vc_channel.id in server_settings[ctx.guild.id]["vc_channels"]:
-            vc_roles[ctx.guild.id][vc_channel.id] = vc_role.id
-            await ctx.send(f"Role '{vc_role.name}' is set for VC channel '{vc_channel.name}'.")
-        else:
-            await ctx.send("This VC channel is not being tracked.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
+async def generate_monthly_leaderboard(guild, message_channel):
+  # Generate and send the monthly leaderboard
+  vc_count_dict = server_settings[guild.id]["vc_count_dict"]
+  sorted_vc_channels = sorted(server_settings[guild.id]["vc_channels"],
+                              key=lambda x: vc_count_dict.get(x, 0),
+                              reverse=True)
+
+  monthly_leaderboard_embed = discord.Embed(
+      title="Monthly Leaderboard",
+      color=server_settings[guild.id]["embed_color"])
+
+  if sorted_vc_channels:
+    for index, vc_channel_id in enumerate(sorted_vc_channels, 1):
+      vc_channel = guild.get_channel(vc_channel_id)
+      if vc_channel:
+        vc_count = vc_count_dict.get(vc_channel_id, 0)
+        monthly_leaderboard_embed.add_field(
+            name=f"#{index} {vc_channel.name}",
+            value=f"**Participants:** {vc_count}",
+            inline=False)
+  else:
+    monthly_leaderboard_embed.add_field(
+        name="No VC channels being tracked",
+        value="Use `.settracking` to set VC channels for tracking.",
+        inline=False)
+
+  await message_channel.send(embed=monthly_leaderboard_embed)
 
 
-@bot.command()
-async def remove_vc_role(ctx, vc_channel: discord.VoiceChannel):
-    # Command to remove the role set for a specific VC channel (only server admins can use this)
-    if ctx.author.guild_permissions.administrator:
-        if vc_channel.id in vc_roles.get(ctx.guild.id, {}):
-            del vc_roles[ctx.guild.id][vc_channel.id]
-            await ctx.send(f"Role for VC channel '{vc_channel.name}' removed.")
-        else:
-            await ctx.send("No role is set for this VC channel.")
-    else:
-        await ctx.send("You don't have the required permissions to use this command.")
-
-
-@bot.command()
-async def stats(ctx):
-    # Command to display server statistics
-    settings = server_settings.get(ctx.guild.id)
-    if not settings:
-        await ctx.send("Server statistics are not available.")
-        return
-
-    vc_channels_count = len(settings.get("vc_channels", []))
-    vc_count_dict = settings.get("vc_count_dict", {})
-    member_count = len(vc_count_dict)
-
-    stats_embed = discord.Embed(title="Server Statistics", color=discord.Color.green())
-
-    stats_embed.add_field(name="Total VC Channels Tracked", value=vc_channels_count)
-    stats_embed.add_field(name="Total Members Tracked", value=member_count)
-
-    await ctx.send(embed=stats_embed)
-
-
-# Start the leaderboard update loop, daily upload loop, video usage check loop, erase data loop, and the bot
-update_leaderboards.start()
-daily_upload.start()
-check_pomodoro_loop.start()
-check_video_usage.start()
-erase_data.start()
-
-# Replace 'YOUR_BOT_TOKEN' with your actual bot token
-bot.run('YOUR_BOT_TOKEN')
+keep_alive.keep_alive()
+bot.run('token')
