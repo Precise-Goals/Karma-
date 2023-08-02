@@ -1,7 +1,5 @@
 # Karma - The Wise Study Bot
 
-![Karma Logo](https://render.fineartamerica.com/images/images-profile-flow/400/images-medium-large-5/the-geeta-1-chandresh-patel.jpg)
-
 Karma is an inspiring Discord bot, built with Indian wisdom, focused on hard work, and designed to elevate your study experience. This bot serves as your dedicated academic companion, empowering you to stay organized, track study sessions, and compete on leaderboards with fellow students.
 
 ## Features
@@ -44,3 +42,7 @@ Everyone is welcome to ask about the bot and contribute to its development in th
 ---
 
 Karma Bot - "As you sow, so shall you reap"
+
+---
+![Karma Logo](https://render.fineartamerica.com/images/images-profile-flow/400/images-medium-large-5/the-geeta-1-chandresh-patel.jpg)
+
