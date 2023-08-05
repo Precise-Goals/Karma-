@@ -878,4 +878,4 @@ def time_until_midnight():
 
 if __name__ == "__main__":
   keep_alive.keep_alive()
-  bot.run('MTEzMTQ0MTc3NzI4NzYzOTE5MA.GlnPue.A3K-_anhnzNVOAnIps1xN7iTldUI7xuQFAai18')
+  bot.run('TOKEN')
