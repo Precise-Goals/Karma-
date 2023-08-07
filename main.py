@@ -23,12 +23,6 @@ intents.presences = False
 server_settings = {}
 
 
-def save_server_settings():
-  # Save the server settings to a JSON file
-  with open("server_settings.json", "w") as file:
-    json.dump(server_settings, file)
-
-
 def save_settings():
   with open("server_settings.json", "w") as f:
     json.dump(server_settings, f)
@@ -45,32 +39,14 @@ def load_settings():
     server_settings = {}
 
 
-def load_server_settings():
-  try:
-    with open("server_settings.json", "r") as file:
-      # Check if the file is empty
-      if os.path.getsize("server_settings.json") > 0:
-        return json.load(file)
-      else:
-        # If the file is empty, return an empty dictionary
-        return {}
-  except FileNotFoundError:
-    # If the file doesn't exist yet, return an empty dictionary
-    return {}
-
-
-
-
 @bot.event
 async def on_message(message):
   if message.author == bot.user:
     return
-
   # Process commands
   await bot.process_commands(message)
 
 
-  
 async def add_new_server_settings(guild):
   # Add new server settings data when the bot joins a server
   server_settings[guild.id] = {
@@ -83,19 +59,27 @@ async def add_new_server_settings(guild):
   save_server_settings()
 
 
-def load_server_settings():
-  try:
-    with open("server_settings.json", "r") as file:
-      return json.load(file)
-  except FileNotFoundError:
-    # If the file doesn't exist yet, return an empty dictionary
-    return {}
-
-
 def save_server_settings():
-  with open("server_settings.json", "w") as file:
-    json.dump(server_settings, file)
+    with open("server_settings.json", "w") as file:
+        # Convert Colour objects to hexadecimal strings
+        server_settings_serializable = {
+            str(guild_id): {
+                key: value if not isinstance(value, discord.Colour) else int(value)
+                for key, value in settings.items()
+            }
+            for guild_id, settings in server_settings.items()
+        }
+        json.dump(server_settings_serializable, file)
 
+def load_server_settings():
+    try:
+        with open("server_settings.json", "r") as file:
+            server_settings = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # If the file does not exist or is empty, use default settings
+        server_settings = {}
+
+    return server_settings
 
 def save_todo_tasks():
   # Save the todo list data to a JSON file
@@ -117,7 +101,10 @@ def load_todo_tasks():
     return {}
 
 
-server_settings = load_server_settings()
+def save_tracking():
+  with open('tracking_data.json', 'w') as file:
+    json.dump(tracking, file)
+
 
 server_settings = load_server_settings()
 vc_roles = {}
@@ -128,6 +115,7 @@ pomodoro_settings = {}
 daily_voice_times = {}
 daily_leaderboard = {}
 monthly_leaderboard = {}
+tracking = {}
 IST = pytz.timezone('Asia/Kolkata')
 HH, MM = 0, 0
 upload_time = datetime.time(HH, MM)
@@ -226,8 +214,31 @@ async def gethelp(ctx):
   await view.show_page(view.current_page)
 
 
-# Command to set welcome message
 @bot.command()
+@commands.has_permissions(manage_channels=True)
+async def setwelcomechannel(ctx, channel: discord.TextChannel):
+  if ctx.guild.id not in server_settings:
+    server_settings[ctx.guild.id] = {
+        "welcome_status": True,
+        "welcome_message": "",
+        "welcome_channel_id": None
+    }
+
+  server_settings[ctx.guild.id]["welcome_channel_id"] = channel.id
+  save_settings()
+  await ctx.send(f"Welcome channel set to: {channel.mention}")
+
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def rmwelcome(ctx):
+  server_settings[ctx.guild.id].pop("welcome_message", None)
+  save_settings()
+  await ctx.send("Welcome message removed.")
+
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
 async def setwelcome(ctx, *, message):
   if ctx.guild.id not in server_settings:
     server_settings[ctx.guild.id] = {
@@ -235,34 +246,51 @@ async def setwelcome(ctx, *, message):
         "welcome_message": "",
         "welcome_channel_id": None
     }
+
+  # Replace literal "\\n" with "\n" to create new lines
+  message = message.replace("\\n", "\n")
+
+  # Check if the placeholder "@user" is in the message
+  if "@user" in message:
+    # Replace "@user" with a mention of the new user who joins
+    message = message.replace("@user", f"{user.mention}")
+  else:
+    await ctx.send(
+        "Error: The welcome message must contain the `@user` placeholder.")
+    return
+
   server_settings[ctx.guild.id]["welcome_message"] = message
   save_settings()
-  await ctx.send(f"Welcome message set: `{message}`")
+
+  await ctx.send(f"Welcome message set:\n```{message}```", delete_after=5)
 
 
-# Command to remove welcome message
 @bot.command()
-async def rmwelcome(ctx):
-  server_settings[ctx.guild.id].pop("welcome_message", None)
-  save_settings()
-  await ctx.send("Welcome message removed.")
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int):
+  if amount <= 0:
+    await send_response(ctx,
+                        "Please provide a valid number of messages to purge.")
+    return
 
+  try:
+    await ctx.message.delete()  # Delete the user's command message
 
-# Command to set welcome channel
-@bot.command()
-async def setwelcomechannel(ctx, channel: discord.TextChannel):
-  server_settings[ctx.guild.id]["welcome_channel_id"] = channel.id
-  save_settings()
-  await ctx.send(f"Welcome channel set to: {channel.mention}")
+    # Purge the specified number of messages
+    deleted = await ctx.channel.purge(limit=amount)
+    response = f"Deleted {len(deleted)} messages. Requested by {ctx.author.mention}"
+    await send_response(ctx, response)
 
+    # Wait for 5 seconds
+    await asyncio.sleep(5)
 
-# Command to enable/disable welcome messages
-@bot.command()
-async def setwelcomestatus(ctx, status: bool):
-  server_settings[ctx.guild.id]["welcome_status"] = status
-  save_settings()
-  await ctx.send(f"Welcome messages are {'enabled' if status else 'disabled'}."
-                 )
+    # Delete the response message
+    await ctx.message.delete()
+  except commands.MissingPermissions:
+    # Catch any potential permission errors and send a response
+    await send_response(
+        ctx,
+        "You don't have the necessary permissions to execute this command.")
 
 
 ## Readiness
@@ -276,7 +304,7 @@ async def on_ready():
       server_settings[guild.id] = {
           "vc_channels": [],
           "message_channel_id": None,
-          "embed_color": discord.Color.dark_blue().value,
+          "embed_color": discord.Color.from_rgb(255, 119, 0),
           "mercy_time": 5,
           "monthly_top_role": None,
           "vc_count_dict": {}
@@ -288,51 +316,54 @@ async def on_ready():
 
 #xontuinues
 
-
-@bot.event
-async def on_member_join(member):
-  guild_id = member.guild.id
-  if guild_id not in server_settings:
-    server_settings[guild_id] = {
-        "welcome_status": True,
-        "welcome_message": "Welcome to our server!",
-        "welcome_channel_id": None
-    }
-    save_settings()
-
-  if server_settings[guild_id]["welcome_status"]:
-    welcome_message = server_settings[guild_id]["welcome_message"].replace(
-        "{user}", member.mention).replace("{server}", member.guild.name)
-
-    if server_settings[guild_id]["welcome_channel_id"] is not None:
-      channel = member.guild.get_channel(
-          server_settings[guild_id]["welcome_channel_id"])
-      if channel:
-        await channel.send(welcome_message)
-    else:
-      await member.send(welcome_message)
-
-
 ## securtiy below
 
 
+async def send_response(ctx, response):
+  embed = discord.Embed(description=response, color=Permanent_color)
+  embed.set_author(
+      name="Arjuna the Wise",
+      icon_url=
+      "https://cdn.discordapp.com/attachments/1080886691067338815/1136553714610602024/2FBCNuy.png"
+  )
+  embed.set_footer(text=f"Server: {ctx.guild.name}")
+  await ctx.send(embed=embed)
+
+
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@commands.has_permissions(manage_messages=True)
 async def kick(ctx, member: discord.Member, *, reason=None):
+  if ctx.author.top_role <= member.top_role:
+    await send_response(
+        ctx, "You can't kick a member with a higher or equal role.")
+    return
+
   await member.kick(reason=reason)
-  await ctx.send(f"{member.mention} has been kicked. Reason: {reason}")
+  await send_response(ctx,
+                      f"{member.mention} has been kicked. Reason: {reason}")
 
 
 @bot.command()
-@commands.has_permissions(ban_members=True)
+@commands.has_permissions(manage_messages=True)
 async def ban(ctx, member: discord.Member, *, reason=None):
+  if ctx.author.top_role <= member.top_role:
+    await send_response(ctx,
+                        "You can't ban a member with a higher or equal role.")
+    return
+
   await member.ban(reason=reason)
-  await ctx.send(f"{member.mention} has been banned. Reason: {reason}")
+  await send_response(ctx,
+                      f"{member.mention} has been banned. Reason: {reason}")
 
 
 @bot.command()
-@commands.has_permissions(mute_members=True)
+@commands.has_permissions(manage_messages=True)
 async def mute(ctx, member: discord.Member, *, reason=None):
+  if ctx.author.top_role <= member.top_role:
+    await send_response(
+        ctx, "You can't mute a member with a higher or equal role.")
+    return
+
   # Assuming you have a 'Muted' role to apply to muted users
   muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
 
@@ -355,45 +386,61 @@ async def mute(ctx, member: discord.Member, *, reason=None):
     except ValueError:
       pass
 
-  await ctx.send(f"{member.mention} has been muted. Reason: {reason}")
+  await send_response(ctx,
+                      f"{member.mention} has been muted. Reason: {reason}")
 
   if timeout_minutes:
     await asyncio.sleep(timeout_minutes * 60)
     await member.remove_roles(muted_role)
-    await ctx.send(f"{member.mention} has been unmuted after the timeout.")
+    await send_response(
+        ctx, f"{member.mention} has been unmuted after the timeout.")
 
 
 @bot.command()
 async def unmute(ctx, member: discord.Member):
-  role = discord.utils.get(ctx.guild.roles, name="Muted")
-  if role in member.roles:
-    await member.remove_roles(role)
-    await ctx.send(f"{member.mention} has been unmuted.")
-  else:
-    await ctx.send(f"{member.mention} is not muted.")
+  if ctx.author.top_role <= member.top_role:
+    await ctx.send("You can't unmute a member with a higher or equal role.")
+    return
+
+  await member.edit(mute=False)
+  await ctx.send(f"{member.mention} has been unmuted.")
 
 
-# Command to unban a member
 @bot.command()
+async def warn(ctx, member: discord.Member, *, reason=None):
+  if ctx.author.top_role <= member.top_role:
+    await send_response(
+        ctx, "You can't warn a member with a higher or equal role.")
+    return
+
+  await send_response(
+      ctx, f" **{member.mention} has been warned. Reason: {reason} **")
+
+
+@bot.command()
+@commands.has_permissions(manage_messages=True)
 async def unban(ctx, member_id: int):
   banned_users = await ctx.guild.bans()
   member = discord.utils.find(lambda u: u.user.id == member_id, banned_users)
 
   if member:
+    if ctx.author.top_role <= member.user.top_role:
+      await send_response(
+          ctx, "You can't unban a member with a higher or equal role.")
+      return
+
     await ctx.guild.unban(member.user)
-    await ctx.send(f"{member.user.mention} has been unbanned.")
+    await send_response(ctx, f"{member.user.mention} has been unbanned.")
   else:
-    await ctx.send("Member not found or not banned.")
+    await send_response(ctx, "Member not found or not banned.")
 
 
-@bot.command()
-async def warn(ctx, member: discord.Member, *, reason=None):
-  await ctx.send(f"{member.mention} has been warned. Reason: {reason}")
-
-
+@unban.error
 @kick.error
 @ban.error
 @mute.error
+@unmute.error
+@warn.error
 async def on_command_error(ctx, error):
   if isinstance(error, commands.MissingPermissions):
     await ctx.send(
@@ -413,29 +460,68 @@ def is_baby_account(member):
 
 @bot.event
 async def on_member_join(member):
-  server_id = member.guild.id
-  if server_id in server_settings:
-    wait_time = server_settings[server_id].get("verification_wait", 0)
-    if wait_time > 0:
-      if is_baby_account(member):
-        try:
-          await member.send(
-              "Welcome! Before you can chat, you need to wait for verification. Please consult the mods and add them as friends for verification."
-          )
-          await member.edit(mute=True)
-          await asyncio.sleep(wait_time * 60)  # Convert wait_time to seconds
-          await member.edit(mute=False)
-          await member.send(
-              "Verification wait time is over. You can now chat in the server."
-          )
-        except discord.Forbidden:
-          print(
-              f"Could not send DM to {member.display_name}. Please ensure the user allows DMs from this server."
-          )
+  guild_id = member.guild.id
+
+  # Check if the guild is in the server_settings, if not, initialize its settings
+  if guild_id not in server_settings:
+    server_settings[guild_id] = {
+        "welcome_status": True,
+        "welcome_message": "Welcome to our server, {user.mention}!",
+        "welcome_channel_id": None,
+        "verification_wait": 0
+    }
+    save_settings()
+
+  # Check if the guild has a verification wait time
+  wait_time = server_settings[guild_id].get("verification_wait", 0)
+  if wait_time > 0 and is_baby_account(member):
+    try:
+      server_name = member.guild.name  # Define the server_name variable here
+      embed = discord.Embed(
+          title="Hey There",
+          description=
+          f"Welcome to the {server_name}! We ensure a safe and chill environment around our {server_name}. This is just a verification message for your and the server's safety. Enjoy your stay here! 💯",
+          color=Permanent_color)
+      embed.set_footer(
+          text="Powered by Arjuna",
+          icon_url=
+          "https://cdn.discordapp.com/attachments/1080886691067338815/1136553714610602024/2FBCNuy.png"
+      )
+      embed.set_thumbnail(
+          url=
+          "https://cdn.discordapp.com/attachments/1080886691067338815/1136553714610602024/2FBCNuy.png"
+      )
+
+      await member.send(embed=embed)
+      await member.edit(mute=True)
+      await asyncio.sleep(wait_time * 60)  # Convert wait_time to seconds
+      await member.edit(mute=False)
+      await member.send(
+          "Verification wait time is over. You can now chat in the server.")
+    except discord.Forbidden:
+      print(
+          f"Could not send DM to {member.display_name}. Please ensure the user allows DMs from this server."
+      )
+  else:
+    # Get the server name
+    server_name = member.guild.name
+
+    # Check if welcome messages are enabled for this guild
+    if server_settings[guild_id]["welcome_status"]:
+      # Get the welcome message and replace placeholders
+      welcome_message = server_settings[guild_id]["welcome_message"].replace(
+          "{user}", member.mention).replace("{server}", server_name)
+
+      # Get the welcome channel ID
+      welcome_channel_id = server_settings[guild_id]["welcome_channel_id"]
+
+      # Check if a welcome channel is set, if not, send the welcome message via DM
+      if welcome_channel_id is not None:
+        channel = member.guild.get_channel(welcome_channel_id)
+        if channel:
+          await channel.send(welcome_message)
       else:
-        await member.send("Welcome to the server!")
-    else:
-      await member.send("Welcome to the server!")
+        await member.send(welcome_message)
 
 
 @bot.command()
@@ -450,6 +536,34 @@ async def setbabybench(ctx, time_in_hours: int):
     await ctx.send(f"Baby account threshold set to {time_in_hours} hours.")
   else:
     await ctx.send("Please provide a positive integer value for the time.")
+
+
+@bot.command()
+async def setwait(ctx, time_in_minutes: int):
+  if time_in_minutes >= 0:
+    server_settings[ctx.guild.id] = {
+        "baby_account_threshold":
+        server_settings.get(ctx.guild.id, {}).get("baby_account_threshold", 5),
+        "verification_wait":
+        time_in_minutes
+    }
+    await ctx.send(f"Verification wait time set to {time_in_minutes} minutes.")
+  else:
+    await ctx.send("Please provide a non-negative integer value for the time.")
+
+
+@bot.command()
+async def setnowait(ctx):
+  server_id = str(ctx.guild.id)
+  if server_id not in server_settings:
+    server_settings[server_id] = {}
+
+  server_settings[server_id]["verification_mute"] = False
+  save_settings()
+  await ctx.send("Verification mute disabled.")
+
+
+##security above
 
 
 @bot.command()
@@ -488,7 +602,12 @@ async def setaimrole(ctx, *roles: discord.Role):
 
 @bot.command()
 async def setdailyleadb(ctx, channel: discord.TextChannel):
+  # Ensure that server_settings[ctx.guild.id] exists as a dictionary
+  server_settings.setdefault(ctx.guild.id, {})
+
+  # Set the daily_leaderboard_channel value
   server_settings[ctx.guild.id]["daily_leaderboard_channel"] = channel.id
+  save_server_settings()  # Save the updated server settings
   await ctx.send(f"Daily leaderboard channel set to {channel.mention}")
 
 
@@ -527,15 +646,23 @@ async def topmonthly(ctx):
 
 
 @bot.command()
-async def settracking(ctx, *channels: discord.VoiceChannel):
-  if ctx.author.guild_permissions.administrator:
-    server_settings[ctx.guild.id]["vc_channels"] = [
-        channel.id for channel in channels
-    ]
-    await ctx.send("Tracking has been set for the specified voice channels.")
-  else:
-    await ctx.send(
-        "You don't have the required permissions to use this command.")
+async def settracking(ctx, *, text: str):
+  channels = ctx.guild.text_channels
+  guild_id = ctx.guild.id
+  tracking_channels = tracking.setdefault(guild_id, {})
+
+  for channel in channels:
+    # Check if the channel is already being tracked
+    if channel.id in tracking_channels:
+      continue
+
+    # Add the channel to tracking_channels with the given text
+    tracking_channels[channel.id] = text
+
+  # Save the changes to the tracking dictionary
+  save_tracking()
+
+  await ctx.send(f"Tracking set for new channels with text: {text}")
 
 
 @bot.command()
@@ -551,34 +678,6 @@ async def removetracking(ctx, *channels: discord.VoiceChannel):
 
 
 # ... (previous code)
-
-
-@bot.command()
-async def setwait(ctx, time_in_minutes: int):
-  if time_in_minutes >= 0:
-    server_settings[ctx.guild.id] = {
-        "baby_account_threshold":
-        server_settings.get(ctx.guild.id, {}).get("baby_account_threshold", 5),
-        "verification_wait":
-        time_in_minutes
-    }
-    await ctx.send(f"Verification wait time set to {time_in_minutes} minutes.")
-  else:
-    await ctx.send("Please provide a non-negative integer value for the time.")
-
-
-@bot.command()
-async def setnowait(ctx):
-  server_id = str(ctx.guild.id)
-  if server_id not in server_settings:
-    server_settings[server_id] = {}
-
-  server_settings[server_id]["verification_mute"] = False
-  save_settings()
-  await ctx.send("Verification mute disabled.")
-
-
-##security above
 
 
 @bot.command()
@@ -660,7 +759,9 @@ async def ping(ctx):
   latency = round(
       bot.latency *
       1000)  # Convert to milliseconds and round to 2 decimal places
-  await ctx.send(f" Ping Pong! Response Latency is {latency} ms ⭐💻 ")
+  await ctx.send(
+      f"**O==========================O** \n ** Ping Pong! Response Latency is {latency} ms ** 📛  \n \n **O==========================O** "
+  )
 
 
 @bot.command()
@@ -759,7 +860,6 @@ def generate_todo_list(todo_list):
 
 @bot.command()
 async def todolist(ctx):
-  # Delete the user's command message
   await asyncio.sleep(1)
   await ctx.message.delete()
 
@@ -1027,14 +1127,13 @@ def time_until_midnight():
 
 @bot.after_invoke
 async def delete_user_message(ctx):
-  await asyncio.sleep(
-      0.5
-  )  # A slight delay before deleting the message to ensure it's processed
-  await ctx.message.delete()
+  if ctx.author != bot.user:
+    await asyncio.sleep(
+        3
+    )  # A slight delay before deleting the message to ensure it's processed
+    await ctx.message.delete()
 
 
 if __name__ == "__main__":
   keep_alive.keep_alive()
-  bot.run(
-      'MTEzMTQ0MTc3NzI4NzYzOTE5MA.GtO3Qt.iUqxP1WI1d7l0A-xAlIbmzRK3LxpmQegnNtbaI'
-  )
+  bot.run(os.environ['Token'])
